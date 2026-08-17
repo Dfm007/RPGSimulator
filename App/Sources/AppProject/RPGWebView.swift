@@ -214,12 +214,24 @@ struct RPGWebView: UIViewRepresentable {
                 }
             }
         }
-private func jsStringLiteral(_ s: String) -> String? {
-            guard let data = try? JSONSerialization.data(withJSONObject: s),
-                  let literal = String(data: data, encoding: .utf8) else { return nil }
-            return literal
+        private func jsStringLiteral(_ s: String) -> String? {
+            var out = "'"
+            for ch in s {
+                switch ch {
+                case "\\": out += "\\\\"
+                case "'":  out += "\\'"
+                case "\n": out += "\\n"
+                case "\r": out += "\\r"
+                case "\u{2028}": out += "\\u2028"
+                case "\u{2029}": out += "\\u2029"
+                default: out.append(ch)
+                }
+            }
+            out += "'"
+            return out
         }
-func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
             log("❌ 导航失败: \(error)")
         }
 
