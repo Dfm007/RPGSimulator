@@ -66,6 +66,7 @@ struct RPGWebView: UIViewRepresentable {
         let saveDir: URL
         private let logFileURL: URL
         private weak var webView: WKWebView?
+        private var hasRestoredSaves = false
 
         init(gamePath: URL) {
             self.gamePath = gamePath
@@ -135,6 +136,8 @@ struct RPGWebView: UIViewRepresentable {
             self.webView = webView
             log("🌐 页面加载完成")
 
+            restoreSavesIfNeeded(in: webView)
+
             let script = RPGWebView.bridgeJavaScript()
             webView.evaluateJavaScript(script) { _, error in
                 if let error = error {
@@ -145,7 +148,78 @@ struct RPGWebView: UIViewRepresentable {
             }
         }
 
-        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+                // MARK: - ⭐ 读档：把 save/*.rpgsave 写回 localStorage
+                private func restoreSavesIfNeeded(in webView: WKWebView) {
+            guard !hasRestoredSaves else { return }
+            hasRestoredSaves = true
+
+            let fm = FileManager.default
+            guard let files = try? fm.contentsOfDirectory(at: saveDir, includingPropertiesForKeys: nil) else {
+                log("⚠️ 无法读取存档目录")
+                return
+            }
+            let saves = files.filter { $0.pathExtension == "rpgsave" }
+
+            var writeStmts = ""
+            var keepKeys: [String] = []
+            var count = 0
+            for url in saves {
+                let base = url.deletingPathExtension().lastPathComponent
+                guard base.hasPrefix("file"), let fileId = Int(base.dropFirst(4)),
+                      let data = try? String(contentsOf: url, encoding: .utf8),
+                      let literal = jsStringLiteral(data) else {
+                    continue
+                }
+                let key = "RPG File\(fileId)"
+                keepKeys.append(key)
+                writeStmts += "localStorage.setItem('\(key)', \(literal));"
+                count += 1
+            }
+
+            let keepList = keepKeys.map { "'\($0)'" }.joined(separator: ",")
+            let cleanupJS = """
+            (function(){
+                var keep = [\(keepList)];
+                var doomed = [];
+                for (var i = 0; i < localStorage.length; i++) {
+                    var k = localStorage.key(i);
+                    if (k && k.indexOf('RPG File') === 0) {
+                        if (keep.indexOf(k) === -1) { doomed.push(k); }
+                    }
+                }
+                for (var j = 0; j < doomed.length; j++) { localStorage.removeItem(doomed[j]); }
+                return doomed.length;
+            })();
+            """
+
+            webView.evaluateJavaScript(cleanupJS) { [weak self] _, error in
+                guard let self = self else { return }
+                if let error = error {
+                    self.log("❌ 清理旧存档失败: \(error)")
+                    return
+                }
+                if writeStmts.isEmpty {
+                    self.log("ℹ️ 存档目录为空，已清空 localStorage 中的存档")
+                    webView.reload()
+                    return
+                }
+                let writeJS = "(function(){\(writeStmts)})();"
+                webView.evaluateJavaScript(writeJS) { _, writeError in
+                    if let writeError = writeError {
+                        self.log("❌ 恢复存档失败: \(writeError)")
+                    } else {
+                        self.log("✅ 已同步 \(count) 个存档到 localStorage，重新加载")
+                        webView.reload()
+                    }
+                }
+            }
+        }
+private func jsStringLiteral(_ s: String) -> String? {
+            guard let data = try? JSONSerialization.data(withJSONObject: s),
+                  let literal = String(data: data, encoding: .utf8) else { return nil }
+            return literal
+        }
+func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
             log("❌ 导航失败: \(error)")
         }
 
